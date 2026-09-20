@@ -1,0 +1,63 @@
+/**
+ * Polar Energy Resilience — Engineering SCADA Tokens
+ * Crisp industrial palette: dark surface, high-contrast typography, strict severity semaphores.
+ */
+
+:root {
+  /* Surfaces — slate/navy engineering dark theme */
+  --surface-0: #090d12;
+  --surface-1: #111720;
+  --surface-2: #182230;
+  --surface-3: #202d3d;
+  --border-subtle: #233040;
+  --border-strong: #334458;
+
+  /* Text — High Contrast WCAG AA compliant */
+  --text-primary: #f0f4f8;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  /* Severity Semaphores — strict operational alerting */
+  --severity-nominal: #22c55e; /* Crisp green */
+  --severity-watch: #f59e0b;   /* Amber */
+  --severity-critical: #ef4444;/* Red */
+
+  /* Data-Source & Subsystem Hues */
+  --source-aadc: #3b82f6;      /* Steel Blue */
+  --source-solar: #eab308;     /* Solar Gold */
+  --source-battery: #14b8a6;   /* Teal */
+  --source-genset: #d97706;    /* Diesel Bronze */
+  --source-simulated: #a855f7; /* Engineering Purple */
+
+  /* Chrome & Selection Accent */
+  --accent-ice: #38bdf8;       /* Polar Glacial Blue */
+
+  /* Typography */
+  --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+
+  --fs-11: 0.6875rem;
+  --fs-12: 0.75rem;
+  --fs-13: 0.8125rem;
+  --fs-15: 0.9375rem;
+  --fs-18: 1.125rem;
+  --fs-24: 1.5rem;
+  --fs-32: 2rem;
+
+  /* Spacing (4px base unit) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius — crisp 3px-4px corners, strictly no pill shapes or oversized rounded cards */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  /* Subtle operational transitions */
+  --motion-fast: 100ms ease-out;
+  --motion-base: 140ms ease-out;
+}
