@@ -24,6 +24,24 @@ class ScenarioRequest(BaseModel):
     baselineSource: str
 
 
+def is_active(
+    perturbation: Perturbation,
+    day: int,
+) -> bool:
+
+    end_day = (
+        perturbation.startDay
+        + perturbation.durationDays
+        - 1
+    )
+
+    return (
+        perturbation.startDay
+        <= day
+        <= end_day
+    )
+
+
 @router.post("/scenarios/run")
 def run_scenario(request: ScenarioRequest):
 
@@ -40,7 +58,6 @@ def run_scenario(request: ScenarioRequest):
         baseline_monthly_kwh / (30 * 24)
     )
 
-    # Current fuel service structure
     baseline_fuel_litres = fuel["totalLitres"]
 
     baseline_daily_fuel = (
@@ -52,13 +69,8 @@ def run_scenario(request: ScenarioRequest):
     )
 
     # -----------------------------------------
-    # Scenario parameters
+    # Scenario-level assumptions
     # -----------------------------------------
-
-    demand_multiplier = 1.0
-    solar_multiplier = 1.0
-    genset_outage = 0
-    resupply_delay = 0
 
     assumptions = [
         "Baseline demand comes from the trained Random Forest forecast.",
@@ -67,9 +79,57 @@ def run_scenario(request: ScenarioRequest):
         "Generator dispatch and battery chemistry are not physically simulated.",
     ]
 
+    for perturbation in request.perturbations:
+
+        p_type = perturbation.type
+        magnitude = perturbation.magnitude
+
+        if p_type == "temp_drop":
+
+            assumptions.append(
+                f"Temperature drop of {abs(magnitude):.1f}°C "
+                "is modeled as increased electrical demand "
+                "during the configured event window."
+            )
+
+        elif p_type == "solar_loss":
+
+            assumptions.append(
+                f"Solar availability is reduced by "
+                f"{magnitude:.1f}% during the configured event window."
+            )
+
+        elif p_type == "genset_outage":
+
+            assumptions.append(
+                f"{int(magnitude)} genset outage(s) "
+                "are represented as additional system stress "
+                "during the configured event window."
+            )
+
+        elif p_type == "blizzard":
+
+            assumptions.append(
+                f"Blizzard severity of {magnitude:.1f} kt "
+                "reduces solar availability and increases load stress "
+                "during the configured event window."
+            )
+
+        elif p_type == "resupply_delay":
+
+            assumptions.append(
+                f"Resupply delay of {int(magnitude)} days "
+                "is included in the fuel-risk assessment."
+            )
+
     # -----------------------------------------
-    # Apply perturbations
+    # Scenario-level demand calculation
     # -----------------------------------------
+
+    overall_demand_multiplier = 1.0
+    overall_solar_multiplier = 1.0
+    genset_outage = 0
+    resupply_delay = 0
 
     for perturbation in request.perturbations:
 
@@ -78,38 +138,23 @@ def run_scenario(request: ScenarioRequest):
 
         if p_type == "temp_drop":
 
-            temperature_effect = abs(magnitude) * 0.02
-
-            demand_multiplier += temperature_effect
-
-            assumptions.append(
-                f"Temperature drop of {abs(magnitude):.1f}°C "
-                "is modeled as increased electrical demand."
+            overall_demand_multiplier += (
+                abs(magnitude) * 0.02
             )
 
         elif p_type == "solar_loss":
 
-            solar_multiplier *= max(
+            overall_solar_multiplier *= max(
                 1 - magnitude / 100,
                 0,
-            )
-
-            assumptions.append(
-                f"Solar availability is reduced by "
-                f"{magnitude:.1f}% during the event."
             )
 
         elif p_type == "genset_outage":
 
             genset_outage += int(magnitude)
 
-            demand_multiplier += (
+            overall_demand_multiplier += (
                 0.05 * int(magnitude)
-            )
-
-            assumptions.append(
-                f"{int(magnitude)} genset outage(s) "
-                "are represented as additional system stress."
             )
 
         elif p_type == "blizzard":
@@ -119,53 +164,240 @@ def run_scenario(request: ScenarioRequest):
                 0.10,
             )
 
-            demand_multiplier += wind_effect
+            overall_demand_multiplier += wind_effect
 
-            solar_multiplier *= 0.70
-
-            assumptions.append(
-                f"Blizzard severity of {magnitude:.1f} kt "
-                "reduces solar availability and increases load stress."
-            )
+            overall_solar_multiplier *= 0.70
 
         elif p_type == "resupply_delay":
 
             resupply_delay += int(magnitude)
 
-            assumptions.append(
-                f"Resupply delay of {int(magnitude)} days "
-                "is included in the fuel-risk assessment."
-            )
-
-    # -----------------------------------------
-    # Scenario demand
-    # -----------------------------------------
-
     scenario_average_kw = (
         baseline_average_kw
-        * demand_multiplier
+        * overall_demand_multiplier
     )
 
     scenario_monthly_kwh = (
         baseline_monthly_kwh
-        * demand_multiplier
+        * overall_demand_multiplier
     )
 
     # -----------------------------------------
-    # Scenario fuel consumption
+    # Timeline simulation
     # -----------------------------------------
 
-    scenario_daily_fuel = (
-        baseline_daily_fuel
-        * demand_multiplier
-    )
+    timeline = []
+
+    starting_soc = 80.0
+    cumulative_fuel_used = 0.0
+
+    daily_fuel_values = []
+
+    for day in range(
+        1,
+        request.durationDays + 1,
+    ):
+
+        # Start each day from baseline conditions.
+        day_demand_multiplier = 1.0
+        day_solar_multiplier = 1.0
+        day_genset_outage = 0
+        day_has_stress = False
+
+        # -------------------------------------
+        # Apply only perturbations active today
+        # -------------------------------------
+
+        for perturbation in request.perturbations:
+
+            if not is_active(
+                perturbation,
+                day,
+            ):
+                continue
+
+            p_type = perturbation.type
+            magnitude = perturbation.magnitude
+
+            day_has_stress = True
+
+            if p_type == "temp_drop":
+
+                day_demand_multiplier += (
+                    abs(magnitude) * 0.02
+                )
+
+            elif p_type == "solar_loss":
+
+                day_solar_multiplier *= max(
+                    1 - magnitude / 100,
+                    0,
+                )
+
+            elif p_type == "genset_outage":
+
+                day_genset_outage += int(magnitude)
+
+                day_demand_multiplier += (
+                    0.05 * int(magnitude)
+                )
+
+            elif p_type == "blizzard":
+
+                wind_effect = min(
+                    magnitude / 1000,
+                    0.10,
+                )
+
+                day_demand_multiplier += (
+                    wind_effect
+                )
+
+                day_solar_multiplier *= 0.70
+
+        # -------------------------------------
+        # Daily load
+        # -------------------------------------
+
+        day_load_kw = (
+            baseline_average_kw
+            * day_demand_multiplier
+        )
+
+        # -------------------------------------
+        # Daily fuel consumption
+        # -------------------------------------
+
+        day_fuel_burn = (
+            baseline_daily_fuel
+            * day_demand_multiplier
+        )
+
+        cumulative_fuel_used += day_fuel_burn
+
+        fuel_remaining = max(
+            baseline_fuel_litres
+            - cumulative_fuel_used,
+            0,
+        )
+
+        daily_fuel_values.append(
+            day_fuel_burn
+        )
+
+        # -------------------------------------
+        # Battery planning model
+        # -------------------------------------
+
+        daily_soc_change = (
+            2.0 * day_solar_multiplier
+            - 2.5 * day_demand_multiplier
+        )
+
+        if day_genset_outage > 0:
+
+            daily_soc_change -= (
+                1.0 * day_genset_outage
+            )
+
+        if day == 1:
+
+            battery_soc = max(
+                0,
+                min(
+                    100,
+                    starting_soc
+                    + daily_soc_change,
+                ),
+            )
+
+        else:
+
+            previous_soc = timeline[-1][
+                "batterySoCPercent"
+            ]
+
+            battery_soc = max(
+                0,
+                min(
+                    100,
+                    previous_soc
+                    + daily_soc_change,
+                ),
+            )
+
+        # -------------------------------------
+        # Severity
+        # -------------------------------------
+
+        severity = "NOMINAL"
+
+        if (
+            fuel_remaining <= 0
+        ):
+
+            severity = "CRITICAL"
+
+        elif (
+            battery_soc < 30
+            or day_genset_outage > 0
+        ):
+
+            severity = "WATCH"
+
+        elif day_has_stress:
+
+            severity = "WATCH"
+
+        elif (
+            resupply_delay > 0
+            and day <= resupply_delay
+        ):
+
+            severity = "WATCH"
+
+        # -------------------------------------
+        # Timeline point
+        # -------------------------------------
+
+        timeline.append(
+            {
+                "day": day,
+                "loadKw": float(
+                    day_load_kw
+                ),
+                "batterySoCPercent": float(
+                    battery_soc
+                ),
+                "fuelLitres": float(
+                    fuel_remaining
+                ),
+                "severity": severity,
+            }
+        )
+
+    # -----------------------------------------
+    # Scenario fuel assessment
+    # -----------------------------------------
+
+    if daily_fuel_values:
+
+        average_scenario_daily_fuel = (
+            sum(daily_fuel_values)
+            / len(daily_fuel_values)
+        )
+
+    else:
+
+        average_scenario_daily_fuel = (
+            baseline_daily_fuel
+        )
 
     scenario_fuel_days = (
         baseline_fuel_litres
-        / scenario_daily_fuel
+        / average_scenario_daily_fuel
     )
 
-    # Resupply delay increases exposure.
     effective_fuel_days = (
         scenario_fuel_days
         - resupply_delay
@@ -201,78 +433,6 @@ def run_scenario(request: ScenarioRequest):
         outcome = "SURVIVES"
 
         fuel_critical_day = None
-
-    # -----------------------------------------
-    # Timeline
-    # -----------------------------------------
-
-    timeline = []
-
-    starting_soc = 80.0
-
-    for day in range(
-        1,
-        request.durationDays + 1,
-    ):
-
-        fuel_used = (
-            scenario_daily_fuel * day
-        )
-
-        fuel_remaining = max(
-            baseline_fuel_litres - fuel_used,
-            0,
-        )
-
-        # Simplified battery planning model.
-        solar_support = solar_multiplier
-
-        daily_soc_change = (
-            2.0 * solar_support
-            - 2.5 * demand_multiplier
-        )
-
-        battery_soc = max(
-            0,
-            min(
-                100,
-                starting_soc
-                + daily_soc_change * day,
-            ),
-        )
-
-        severity = "NOMINAL"
-
-        if (
-            fuel_critical_day is not None
-            and day >= fuel_critical_day
-        ):
-            severity = "CRITICAL"
-
-        elif (
-            battery_soc < 30
-            or (
-                resupply_delay > 0
-                and day <= resupply_delay
-            )
-        ):
-            severity = "WATCH"
-
-        timeline.append(
-            {
-                "day": day,
-                "loadKw": float(
-                    scenario_average_kw
-                ),
-                "batterySoCPercent": float(
-                    battery_soc
-                ),
-                "fuelLitres": float(
-                    fuel_remaining
-                ),
-                "severity": severity,
-            }
-        )
 
     # -----------------------------------------
     # Return frontend-compatible result
